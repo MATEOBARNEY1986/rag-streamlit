@@ -1,7 +1,9 @@
 import os
 import hashlib
 import json
+import time
 from pathlib import Path
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests as _req
@@ -246,6 +248,124 @@ def answer(model, index: ChromaIndex, question: str, top_k: int) -> dict:
     return {"answer": resp.json()["choices"][0]["message"]["content"], "sources": sources}
 
 
+# ── SiAM scraper ─────────────────────────────────────────────────────────────
+_INAT_PROJECT = "tiburones-rayas-y-quimeras-de-colombia"
+_INAT_HEADERS = {"User-Agent": "RAG-Buconos/1.0", "Accept": "application/json"}
+
+def _inat_get(url: str) -> dict:
+    resp = _req.get(url, headers=_INAT_HEADERS, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+def _fetch_all_observations() -> list[dict]:
+    obs, page = [], 1
+    while True:
+        data = _inat_get(
+            f"https://api.inaturalist.org/v1/observations"
+            f"?project_id={_INAT_PROJECT}&per_page=200&page={page}"
+        )
+        batch = data.get("results", [])
+        obs.extend(batch)
+        if len(obs) >= data["total_results"] or not batch:
+            break
+        page += 1
+        time.sleep(0.4)
+    return obs
+
+def _fmt_obs(o: dict) -> str:
+    t    = o.get("taxon") or {}
+    name = t.get("preferred_common_name") or t.get("name") or o.get("species_guess") or "?"
+    sci  = t.get("name") or ""
+    lines = [
+        f"Avistamiento #{o['id']}",
+        f"Especie: {name}" + (f" ({sci})" if sci else ""),
+        f"Lugar: {o.get('place_guess') or 'No especificado'}",
+        f"Fecha: {o.get('observed_on') or o.get('created_at','')[:10]}",
+        f"Calidad: {o.get('quality_grade','casual')}",
+    ]
+    if o.get("location"):
+        lat, lon = o["location"].split(",")
+        lines.append(f"Coordenadas: {float(lat):.4f}, {float(lon):.4f}")
+    if (o.get("description") or "").strip():
+        lines.append(f"Descripción: {o['description'].strip()[:400]}")
+    return "\n".join(lines)
+
+def _species_sheet(taxon: dict, obs_list: list[dict]) -> str:
+    name = taxon.get("preferred_common_name") or taxon.get("name", "")
+    sci  = taxon.get("name", "")
+    cs   = (taxon.get("conservation_status") or {}).get("status_name") or "No evaluado"
+    anc  = " > ".join(
+        a["name"] for a in (taxon.get("ancestors") or [])
+        if a.get("rank") in ("class", "order", "family")
+    )
+    places = sorted({o.get("place_guess","") for o in obs_list if o.get("place_guess")})
+    dates  = sorted(o.get("observed_on","") for o in obs_list if o.get("observed_on"))
+    lines  = [
+        f"=== {name} ({sci}) ===",
+        f"Clasificación: {anc}" if anc else "",
+        f"Estado de conservación: {cs}",
+        f"Observaciones en Colombia: {len(obs_list)}",
+        f"Lugares: {', '.join(places[:10])}" if places else "",
+        f"Período: {dates[0]} a {dates[-1]}" if dates else "",
+        f"\n{(taxon.get('wikipedia_summary') or '')[:800]}" if taxon.get("wikipedia_summary") else "",
+    ]
+    return "\n".join(l for l in lines if l)
+
+def fetch_siam_data(status_placeholder) -> tuple[Path, Path]:
+    """Descarga datos de iNaturalist y guarda dos archivos en DOCS_FOLDER."""
+    status_placeholder.info("Descargando observaciones de iNaturalist…")
+    obs = _fetch_all_observations()
+
+    by_taxon: dict[int, list] = defaultdict(list)
+    taxon_obj: dict[int, dict] = {}
+    for o in obs:
+        t = o.get("taxon") or {}
+        tid = t.get("id")
+        if tid:
+            by_taxon[tid].append(o)
+            taxon_obj.setdefault(tid, t)
+
+    # Avistamientos
+    lines_obs = [
+        "AVISTAMIENTOS — TIBURONES, RAYAS Y QUIMERAS EN COLOMBIA",
+        f"Fuente: iNaturalist · {_INAT_PROJECT}",
+        f"Total: {len(obs)} observaciones", "=" * 60, "",
+        *[_fmt_obs(o) + "\n" for o in obs],
+    ]
+    obs_path = DOCS_FOLDER / "siam_avistamientos.txt"
+    obs_path.write_text("\n".join(lines_obs), encoding="utf-8")
+
+    # Fichas de especie (enriquece las 40 más observadas)
+    status_placeholder.info(f"Enriqueciendo fichas de {len(by_taxon)} especies…")
+    lines_sp = [
+        "FICHAS DE ESPECIES — TIBURONES, RAYAS Y QUIMERAS DE COLOMBIA",
+        f"Fuente: iNaturalist API", "=" * 60, "",
+    ]
+    for i, (tid, olist) in enumerate(sorted(by_taxon.items(), key=lambda x: -len(x[1]))):
+        t = taxon_obj[tid]
+        if i < 40:
+            try:
+                full = _inat_get(f"https://api.inaturalist.org/v1/taxa/{tid}")
+                if full.get("results"):
+                    t = {**t, **full["results"][0]}
+                time.sleep(0.3)
+            except Exception:
+                pass
+        lines_sp.append(_species_sheet(t, olist) + "\n")
+    sp_path = DOCS_FOLDER / "siam_especies.txt"
+    sp_path.write_text("\n".join(lines_sp), encoding="utf-8")
+
+    # Invalidar cache para forzar re-indexación
+    state_path = CACHE_FOLDER / "indexed.json"
+    if state_path.exists():
+        indexed = json.loads(state_path.read_text())
+        indexed.pop("siam_avistamientos.txt", None)
+        indexed.pop("siam_especies.txt", None)
+        state_path.write_text(json.dumps(indexed))
+
+    return obs_path, sp_path
+
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 def main():
     st.set_page_config(page_title="RAG Buconos", page_icon="🧠", layout="wide")
@@ -282,6 +402,19 @@ def main():
         if st.button("⚡ Indexar / Actualizar", use_container_width=True):
             ingest(model, index)
             st.rerun()
+
+        st.divider()
+        st.caption("🌊 Datos externos")
+        if st.button("🔄 Actualizar SiAM / iNaturalist", use_container_width=True):
+            _status = st.empty()
+            try:
+                obs_p, sp_p = fetch_siam_data(_status)
+                _status.success(
+                    f"✅ Descargado: `{obs_p.name}` y `{sp_p.name}`  \n"
+                    "Pulsa **⚡ Indexar / Actualizar** para incorporarlos."
+                )
+            except Exception as e:
+                _status.error(f"❌ Error: {e}")
 
         st.metric("Vectores en ChromaDB", index.count())
         st.divider()
