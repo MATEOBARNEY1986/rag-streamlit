@@ -1,0 +1,22 @@
+services:
+  rag:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - ../RAG_buconos:/docs # carpeta de documentos
+      - rag_cache:/docs/.cache # caché de imágenes indexadas
+    env_file:
+      - .env
+    environment:
+      - DOCS_FOLDER=/docs
+      - CHROMA_URL=http://host.docker.internal:8000
+      - CHROMA_COLLECTION=buconos_rag
+      - OLLAMA_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  rag_cache:
+
