@@ -1,5 +1,14 @@
 # RAG con Streamlit + ChromaDB + Groq
 
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![Python](https://img.shields.io/badge/python-3.11-blue.svg)
+![Docker](https://img.shields.io/badge/docker-ready-2496ED.svg)
+
+> **A self-hostable Retrieval-Augmented Generation (RAG) starter kit.** Drop in your PDFs,
+> text and markdown files, and ask questions about them from a web UI — with **local,
+> multilingual embeddings** (no external calls to vectorize your documents) and fast
+> generation via Groq. Dockerized, incremental indexing, works in 50+ languages.
+
 Aplicación de Retrieval-Augmented Generation (RAG) con interfaz web en Streamlit.
 Indexa PDFs y archivos de texto, responde preguntas usando los documentos como contexto.
 
@@ -95,3 +104,12 @@ EMBED_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"  # 384-dim
 ```
 
 Si cambias el modelo, borra la colección en ChromaDB antes de re-indexar (las dimensiones deben coincidir).
+
+## Licencia
+
+[MIT](LICENSE) — úsalo, modifícalo y distribúyelo libremente.
+
+## Autor
+
+Mantenido por [@MATEOBARNEY1986](https://github.com/MATEOBARNEY1986).
+PRs e issues son bienvenidos.
